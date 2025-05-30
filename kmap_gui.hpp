@@ -15,6 +15,8 @@
 #include <QDir>
 #include <QKeyEvent>
 #include <QTimer>
+#include <QSpinBox>
+#include <QCheckBox>
 
 // Qt3D includes
 #include <Qt3DCore/QEntity>
@@ -58,6 +60,8 @@ private:
     QHBoxLayout* inputLayout;
     QLineEdit* equationInput;
     QPushButton* solveButton;
+    QCheckBox* useVariableCountCheckBox;
+    QSpinBox* variableCountSpinBox;
     QTabWidget* tabWidget;
     
     // Table view tab

@@ -111,8 +111,19 @@ void KMapGUI::setupUI() {
     inputLayout = new QHBoxLayout();
     equationInput = new QLineEdit();
     equationInput->setPlaceholderText("Enter boolean equation (e.g., ABC + A'B'C')");
+    
+    // Add variable count controls
+    useVariableCountCheckBox = new QCheckBox("Force variable count:");
+    variableCountSpinBox = new QSpinBox();
+    variableCountSpinBox->setRange(2, 4);
+    variableCountSpinBox->setValue(4);
+    variableCountSpinBox->setEnabled(false); // Initially disabled
+    
     solveButton = new QPushButton("Solve");
+    
     inputLayout->addWidget(equationInput);
+    inputLayout->addWidget(useVariableCountCheckBox);
+    inputLayout->addWidget(variableCountSpinBox);
     inputLayout->addWidget(solveButton);
     mainLayout->addLayout(inputLayout);
     
@@ -159,6 +170,9 @@ void KMapGUI::setupUI() {
         }
     });
     
+    // Connect checkbox to enable/disable spinbox
+    connect(useVariableCountCheckBox, &QCheckBox::toggled, variableCountSpinBox, &QSpinBox::setEnabled);
+    
     // Set window properties
     setWindowTitle("K-Map Solver");
     resize(800, 600); // Larger size for 3D view
@@ -184,7 +198,7 @@ void KMapGUI::createTorusView() {
     // Setup camera - position it farther away
     Qt3DRender::QCamera *camera = torus3DWindow->camera();
     camera->lens()->setPerspectiveProjection(45.0f, 16.0f/9.0f, 0.1f, 1000.0f);
-    camera->setPosition(QVector3D(0, 0, 40.0f)); // Position farther away
+    camera->setPosition(QVector3D(0, 0, 60.0f)); // Position even farther back for better view
     camera->setViewCenter(QVector3D(0, 0, 0));
     
     // Create root entity
@@ -331,7 +345,14 @@ void KMapGUI::solveEquation() {
         if (solver) {
             delete solver;
         }
-        solver = new KMapSolver(equation);
+        
+        // Create solver with or without variable count specification
+        if (useVariableCountCheckBox->isChecked()) {
+            int varCount = variableCountSpinBox->value();
+            solver = new KMapSolver(equation, varCount);
+        } else {
+            solver = new KMapSolver(equation);
+        }
         
         // Generate the K-map
         auto kmap = solver->solve();
@@ -428,10 +449,16 @@ void KMapGUI::updateKMapTable(const std::vector<std::vector<bool>>& kmap, const 
     kmapTable->setRowCount(rows);
     kmapTable->setColumnCount(cols);
     
-    // Set column headers (Gray code)
+    // Set column headers (Gray code in binary)
     for (int j = 0; j < cols; j++) {
         int gray_j = j ^ (j >> 1);
-        kmapTable->setHorizontalHeaderItem(j, new QTableWidgetItem(QString::number(gray_j)));
+        // Convert to binary string based on number of column variables
+        int numColVars = (variables.size() > 2) ? (variables.size() - 2) : 1;
+        QString binaryStr = "";
+        for (int bit = numColVars - 1; bit >= 0; bit--) {
+            binaryStr += (gray_j & (1 << bit)) ? "1" : "0";
+        }
+        kmapTable->setHorizontalHeaderItem(j, new QTableWidgetItem(binaryStr));
     }
     
     // Set row headers (Gray code)
@@ -518,150 +545,141 @@ void KMapGUI::updateTorusView(const std::vector<std::vector<bool>>& kmap, const 
     // Get the groups for coloring
     std::vector<KMapGroup> groups = solver->getMinimalCoverGroups();
     
-    // Create a mapping of cells to groups
-    std::map<std::pair<int, int>, std::vector<int>> cellGroups;
-    for (size_t groupIdx = 0; groupIdx < groups.size(); ++groupIdx) {
-        for (const auto& cell : groups[groupIdx].cells) {
-            cellGroups[cell].push_back(groupIdx);
-        }
-    }
+    // CREATE A PROPER K-MAP TORUS TEXTURE
+    // The key insight: We need to create a texture where the UV coordinates
+    // when mapped to a torus will create the proper Gray code adjacencies
     
-    // Create a mapping of group indices to colors - use brighter colors
-    QList<QColor> groupColors;
-    groupColors << QColor(255, 120, 120)  // Brighter red
-               << QColor(120, 255, 120)  // Brighter green
-               << QColor(120, 120, 255)  // Brighter blue
-               << QColor(255, 255, 120)  // Brighter yellow
-               << QColor(255, 120, 255)  // Brighter purple
-               << QColor(120, 255, 255)  // Brighter cyan
-               << QColor(255, 200, 120)  // Brighter orange
-               << QColor(200, 120, 255); // Brighter violet
+    // For a proper K-map torus, we need to understand that:
+    // - Horizontally adjacent cells in the K-map should be adjacent on the torus major radius
+    // - Vertically adjacent cells in the K-map should be adjacent on the torus minor radius
+    // - The wrapping should follow Gray code order
     
-    // Create the texture image for the K-map
-    // We'll create a texture with rows*cols cells, plus grid lines
-    int cellSize = 32; // Pixels per cell
-    int gridWidth = 2; // Width of grid lines
-    int texWidth = cols * (cellSize + gridWidth) + gridWidth;
-    int texHeight = rows * (cellSize + gridWidth) + gridWidth;
+    int cellSize = 128;  // Increased from 64 for better label visibility
+    int gridWidth = 4;
+    
+    // Create a texture that will wrap properly around the torus
+    // For proper K-map torus topology, we need the texture to be seamlessly wrappable
+    int texWidth = cols * cellSize;  // Remove grid from edges for seamless wrapping
+    int texHeight = rows * cellSize; // Remove grid from edges for seamless wrapping
     
     QImage kmapImage(texWidth, texHeight, QImage::Format_RGBA8888);
-    kmapImage.fill(Qt::transparent);
+    kmapImage.fill(Qt::white);
     
     QPainter painter(&kmapImage);
     painter.setRenderHint(QPainter::Antialiasing, true);
     
-    // Draw grid lines - make them more visible
-    painter.setPen(QPen(QColor(100, 100, 100), gridWidth));
-    painter.setBrush(Qt::NoBrush);
-    
-    // Draw horizontal grid lines
-    for (int i = 0; i <= rows; i++) {
-        int y = i * (cellSize + gridWidth);
-        painter.drawLine(0, y, texWidth, y);
-    }
-    
-    // Draw vertical grid lines
-    for (int j = 0; j <= cols; j++) {
-        int x = j * (cellSize + gridWidth);
-        painter.drawLine(x, 0, x, texHeight);
-    }
-    
-    // Draw cells with brighter colors for better visibility on matte surface
+    // Draw cells using the EXACT same mapping as the table view
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
-            int x = j * (cellSize + gridWidth) + gridWidth;
-            int y = i * (cellSize + gridWidth) + gridWidth;
+            // Use DIRECT mapping - same as table view
+            // No Gray code remapping - use the data exactly as the table does
+            int texRow = i;  // Direct mapping
+            int texCol = j;  // Direct mapping
+            
+            // Calculate texture position based on direct mapping
+            int x = texCol * cellSize;
+            int y = texRow * cellSize;
             
             QColor cellColor;
             if (kmap[i][j]) {
-                // Cell is 1 - check if it's in any groups
-                std::pair<int, int> cell(i, j);
-                if (cellGroups.count(cell) > 0 && !cellGroups[cell].empty()) {
-                    // Average colors if in multiple groups
-                    QColor blended(255, 255, 255);
-                    for (int groupIdx : cellGroups[cell]) {
-                        QColor groupColor = groupColors[groupIdx % groupColors.size()];
-                        blended = QColor(
-                            (blended.red() + groupColor.red()) / 2,
-                            (blended.green() + groupColor.green()) / 2,
-                            (blended.blue() + groupColor.blue()) / 2
-                        );
-                    }
-                    cellColor = blended;
-                } else {
-                    // No group - use bright green for 1's
-                    cellColor = QColor(150, 255, 150); 
+                // Cell is 1 - use the same color logic as table view
+                cellColor = getCellColor(i, j, groups);
+                
+                // Make it brighter for torus visibility
+                if (cellColor.lightness() > 200) {
+                    cellColor = cellColor.darker(120);
                 }
             } else {
                 // Cell is 0 - use light gray
-                cellColor = QColor(200, 200, 200); 
+                cellColor = QColor(220, 220, 220); 
             }
             
             painter.setPen(Qt::NoPen);
             painter.setBrush(QBrush(cellColor));
             painter.drawRect(x, y, cellSize, cellSize);
             
-            // Draw the cell value as text
+            // Draw the cell value (1 or 0)
             painter.setPen(Qt::black);
-            painter.setFont(QFont("Arial", cellSize / 3, QFont::Bold));
-            painter.drawText(QRect(x, y, cellSize, cellSize), 
+            painter.setFont(QFont("Arial", cellSize / 4, QFont::Bold));
+            painter.drawText(QRect(x, y, cellSize, cellSize * 2/3), 
                              Qt::AlignCenter, 
                              kmap[i][j] ? "1" : "0");
             
-            // Draw Gray codes for the first row and column
-            if (i == 0) {
-                int gray_j = j ^ (j >> 1);
-                QString label = QString::number(gray_j);
-                painter.setPen(Qt::white);
-                painter.drawText(QRect(x, y - gridWidth - cellSize/2, cellSize, cellSize/2),
-                                Qt::AlignCenter, label);
+            // Draw a thin border for better visibility
+            painter.setPen(QPen(QColor(100, 100, 100), 2));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(x, y, cellSize, cellSize);
+            
+            // Add Gray code labels on every cell for better reference
+            painter.setPen(Qt::darkBlue);
+            painter.setFont(QFont("Arial", cellSize / 8, QFont::Bold));
+            
+            // Convert indices to Gray code for labeling
+            int gray_i = texRow ^ (texRow >> 1);
+            int gray_j = texCol ^ (texCol >> 1);
+            
+            // Row variables (top of cell)
+            int numRowVars = (variables.size() > 1) ? 2 : 1;
+            QString rowBinaryStr = "";
+            for (int bit = numRowVars - 1; bit >= 0; bit--) {
+                rowBinaryStr += (gray_i & (1 << bit)) ? "1" : "0";
             }
             
-            if (j == 0) {
-                int gray_i = i ^ (i >> 1);
-                QString label = QString::number(gray_i);
-                painter.setPen(Qt::white);
-                painter.drawText(QRect(x - gridWidth - cellSize/2, y, cellSize/2, cellSize),
-                                Qt::AlignCenter, label);
+            // Column variables (bottom of cell)
+            int numColVars = (variables.size() > 2) ? (variables.size() - 2) : 1;
+            QString colBinaryStr = "";
+            for (int bit = numColVars - 1; bit >= 0; bit--) {
+                colBinaryStr += (gray_j & (1 << bit)) ? "1" : "0";
             }
+            
+            // Draw row label at top of cell
+            painter.drawText(QRect(x, y, cellSize, cellSize/6),
+                            Qt::AlignCenter, rowBinaryStr);
+            
+            // Draw column label at bottom of cell
+            painter.drawText(QRect(x, y + cellSize - cellSize/6, cellSize, cellSize/6),
+                            Qt::AlignCenter, colBinaryStr);
         }
     }
     
     painter.end();
     
-    // Create texture
-    QImage flippedImage = kmapImage.mirrored(false, true); // Qt is y-inverted compared to OpenGL
+    // The texture is now organized in Gray code order for proper torus wrapping
+    QImage textureImage = kmapImage;
     
-    // Create the torus entity with the K-map texture
+    // Create the torus entity
     Qt3DCore::QEntity* torusEntity = new Qt3DCore::QEntity(rootEntity);
     
-    // Create torus mesh
+    // Create torus mesh with proportions that make sense for K-map visualization
     Qt3DExtras::QTorusMesh* torusMesh = new Qt3DExtras::QTorusMesh();
-    float majorRadius = 10.0f;
-    float minorRadius = 4.0f;
+    float majorRadius = 15.0f;  // Larger for better visibility
+    float minorRadius = 6.0f;   // Proportional to major radius
     torusMesh->setRadius(majorRadius);
     torusMesh->setMinorRadius(minorRadius);
-    torusMesh->setRings(rows * 8); // Higher resolution for smoother appearance
-    torusMesh->setSlices(cols * 8); 
+    
+    // Set resolution for smooth appearance
+    // The number of slices and rings should allow proper texture mapping
+    torusMesh->setSlices(cols * 16); // Slices around the major radius (columns)
+    torusMesh->setRings(rows * 16);  // Rings around the minor radius (rows)
     
     // Create a transform component for rotation
     torusTransform = new Qt3DCore::QTransform();
     torusTransform->setScale(1.0f);
-    torusTransform->setRotation(QQuaternion::fromEulerAngles(30.0f, 30.0f, 0.0f)); // Initial rotation
+    torusTransform->setRotation(QQuaternion::fromEulerAngles(30.0f, 30.0f, 0.0f));
     
-    // Create a completely flat material without lighting effects
+    // Create material with proper texture mapping settings
     Qt3DExtras::QDiffuseMapMaterial* material = new Qt3DExtras::QDiffuseMapMaterial();
     
-    // Set properties for a flat, matte look with maximum flatness
-    material->setAmbient(QColor(255, 255, 255));  // Maximum ambient light - fully lit
-    material->setSpecular(QColor(0, 0, 0));       // No specular highlights
-    material->setShininess(1.0f);                 // Minimum shininess
+    // Set properties for flat appearance
+    material->setAmbient(QColor(255, 255, 255));
+    material->setSpecular(QColor(0, 0, 0));
+    material->setShininess(1.0f);
     
     Qt3DRender::QTextureImage* texImageObj = new Qt3DRender::QTextureImage();
     
-    // Save the image to a temporary file
-    QString tempImagePath = QDir::tempPath() + "/kmap_texture.png";
-    flippedImage.save(tempImagePath);
+    // Save the texture for debugging
+    QString tempImagePath = QDir::tempPath() + "/kmap_torus_gray_ordered.png";
+    textureImage.save(tempImagePath);
     
     texImageObj->setSource(QUrl::fromLocalFile(tempImagePath));
     material->diffuse()->addTextureImage(texImageObj);
@@ -723,7 +741,7 @@ void KMapGUI::updateTorusView(const std::vector<std::vector<bool>>& kmap, const 
         for (size_t i = 0; i < groups.size(); ++i) {
             QLabel* colorBox = new QLabel();
             colorBox->setFixedSize(20, 20);
-            colorBox->setStyleSheet(QString("background-color: %1").arg(groupColors[i % groupColors.size()].name()));
+            colorBox->setStyleSheet(QString("background-color: %1").arg(QColor(getCellColor(groups[i].cells[0].first, groups[i].cells[0].second, groups)).name()));
             
             QLabel* termLabel = new QLabel(QString::fromStdString(groups[i].term));
             

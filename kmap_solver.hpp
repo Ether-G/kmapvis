@@ -19,6 +19,8 @@ struct KMapGroup {
 class KMapSolver {
 public:
     KMapSolver(const string& equation);
+    KMapSolver(const string& equation, int expectedVariableCount);
+    KMapSolver(const string& equation, const vector<char>& expectedVariables);
     
     // Main solving function
     vector<vector<bool>> solve() const;
@@ -42,6 +44,8 @@ private:
     
     // Helper functions
     void parseEquation();
+    void parseEquation(int expectedVariableCount);
+    void parseEquation(const vector<char>& expectedVariables);
     bool evaluateExpression(const string& expr);
     vector<vector<bool>> generateKMap();
     string minimizeExpression() const;
